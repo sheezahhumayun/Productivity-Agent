@@ -1,5 +1,101 @@
 # Architecture — Productivity Agent
 
+> Assignment 3 | AI Summer Fellowship 2026 | Week 3
+
+---
+
+## Component Explanations
+
+### User
+The end user interacts with the system through a web browser. All interaction is
+through natural-language chat. No technical knowledge of the underlying tools or
+database is required. The user also interacts with the approval card when the agent
+proposes a write operation.
+
+### Frontend (Streamlit)
+A multi-tab Streamlit application (`app/main.py`) with four panels:
+- **Chat** — the primary interaction surface; renders messages, the live status
+  box (`st.status`), and the approval card
+- **Tasks** — read-only browser with status/priority/tag filters
+- **Notes** — keyword search and full-content view
+- **Logs** — per-run execution log with expandable tool input/result detail
+
+Streamlit's session state (`st.session_state`) holds conversation history,
+pending approval state, and agent status between page interactions.
+
+### Agent API (`app/agent/agent.py`)
+Two public functions serve as the agent API:
+- `run_agent(user_message, history, status_fn)` — starts a new agent run
+- `resume_after_approval(pending, approved, status_fn)` — resumes after user decision
+
+Both call `_run_loop()` which contains the core decision logic.
+
+### Agent State (`app/agent/state.py`)
+Three dataclasses represent the state machine:
+- `ToolCallRecord` — one entry per tool call within a run
+- `PendingApproval` — full mid-run state snapshot (messages, step count, tool log)
+- `AgentRunResult` — the return value of every agent call (text, approval needed, or error)
+
+### LLM (Groq / llama-3.3-70b-versatile)
+The language model receives the system prompt, full conversation history, and all
+10 tool definitions on every call. It responds with either a text reply or a
+`tool_calls` array. The OpenAI Python SDK is used with Groq's base URL, making
+the provider interchangeable.
+
+**Model provider:** Groq (OpenAI-compatible API at `api.groq.com/openai/v1`)
+**Temperature:** 0.3 (Groq default) — validated in Experiment 3 as optimal
+
+### Tool Registry (`app/tools/__init__.py`)
+A whitelist-based router that:
+1. Maps tool names to executor functions
+2. Enforces a 30-second timeout via `ThreadPoolExecutor`
+3. Returns structured error results for unknown tools
+
+### Task Tools (`app/tools/task_tools.py`)
+Five tools: `create_task`, `list_tasks`, `update_task`, `complete_task`,
+`delete_task`. All inputs are validated with Pydantic before reaching the database.
+Write tools have no side effects until approved by the user — the executor is
+only called after `resume_after_approval()` confirms the approval.
+
+### Notes Tools (`app/tools/note_tools.py`)
+Two tools: `save_note` and `search_notes`. Search supports keyword (SQL LIKE),
+category filter, and date range filter (`date_from` / `date_to`).
+
+### Planning Tools (`app/tools/planning_tools.py`)
+Three tools:
+- `extract_meeting_actions` — makes an LLM sub-call with `response_format=json_object`
+- `generate_work_plan` — algorithmic scheduling with priority scoring (no LLM)
+- `generate_weekly_report` — database aggregation with no LLM call
+
+### Database (`app/database/`)
+SQLite via SQLAlchemy 2.0 ORM. Three tables:
+- `tasks` — 11 fields including tags (JSON column) and timestamps
+- `notes` — 7 fields
+- `execution_logs` — full audit trail with tool inputs, results, timing
+
+### Execution Logs
+Every agent run writes a log row at start and updates it at end. Logs include
+run ID, model, all tool calls with inputs and results, approval decisions, timing,
+and final outcome. API keys are never logged.
+
+### Human Approval Step
+Enforced at the code level, not the prompt level. When `_run_loop()` encounters
+a tool in `APPROVAL_REQUIRED_TOOLS`, it immediately packages all state into a
+`PendingApproval` dataclass and returns it to the caller. The loop cannot continue
+until `resume_after_approval()` is called.
+
+### Session Memory
+The full conversation is maintained in `st.session_state.conversation` and
+reconstructed as `api_messages` on each turn. The LLM receives the complete
+history, enabling it to resolve conversational references like "the second one."
+
+### Observability
+The Logs tab provides a human-readable audit trail. The `st.status()` box shows
+live per-step status during execution. Python's `logging` module writes structured
+logs to `LOG_DIR` for server-side debugging.
+
+---
+
 ## System Architecture
 
 ```
