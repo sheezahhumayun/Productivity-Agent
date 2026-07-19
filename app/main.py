@@ -14,9 +14,6 @@ from app.agent.agent import run_agent, resume_after_approval
 from app.agent.state import AgentRunResult
 from app.logging.run_logger import setup_logging
 
-setup_logging()
-init_db()
-
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Productivity Agent",
@@ -99,9 +96,6 @@ def _init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
-
-_init_state()
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -384,6 +378,9 @@ def render_logs_tab():
 
 # ── Main layout ────────────────────────────────────────────────────────────────
 def main():
+    setup_logging()
+    init_db()
+    _init_state()
     render_sidebar()
 
     # Main content area
