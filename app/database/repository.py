@@ -178,6 +178,8 @@ def save_note(
 def search_notes(
     query: str,
     category: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     limit: int = 10,
 ) -> List[dict]:
     init_db()
@@ -192,6 +194,10 @@ def search_notes(
             )
         if category:
             q = q.filter(NoteModel.category == category)
+        if date_from:
+            q = q.filter(NoteModel.created_at >= date_from)
+        if date_to:
+            q = q.filter(NoteModel.created_at <= date_to + " 23:59:59")
         notes = q.order_by(NoteModel.updated_at.desc()).limit(limit).all()
         return [_note_to_dict(n) for n in notes]
 

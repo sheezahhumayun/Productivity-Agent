@@ -71,13 +71,25 @@ def _run_loop(
     step_count: int,
     tool_calls_log: List[ToolCallRecord],
     tool_retries: dict,
+    status_fn=None,
+    seen_calls: Optional[set] = None,
 ) -> AgentRunResult:
     """Core agent loop — runs until completion, approval needed, or step limit."""
     client = _get_client()
+    if seen_calls is None:
+        seen_calls = set()
+
+    def _status(msg: str):
+        if status_fn:
+            try:
+                status_fn(msg)
+            except Exception:
+                pass
 
     while step_count < MAX_AGENT_STEPS:
         step_count += 1
         logger.info(f"[{run_id}] Step {step_count}/{MAX_AGENT_STEPS}")
+        _status(f"🧠 Step {step_count}: thinking...")
 
         try:
             response = client.chat.completions.create(
@@ -114,6 +126,7 @@ def _run_loop(
 
         # ── Final text response ─────────────────────────────────────────────────
         if finish_reason == "stop":
+            _status("✍️ Producing final response...")
             text = choice.message.content or "Done."
             return AgentRunResult(
                 run_id=run_id,
@@ -162,6 +175,27 @@ def _run_loop(
                     tool_input=tool_input,
                 )
 
+                _status(f"🔧 Selected tool: `{tool_name}`")
+
+                # ── Duplicate tool-call detection ───────────────────────────────
+                call_key = (tool_name, json.dumps(tool_input, sort_keys=True))
+                if call_key in seen_calls:
+                    dup_result = {
+                        "success": False,
+                        "error": f"Duplicate call: `{tool_name}` was already called with identical arguments this turn. Use different parameters or stop.",
+                    }
+                    record.tool_result = dup_result
+                    record.error = dup_result["error"]
+                    tool_result_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": json.dumps(dup_result),
+                    })
+                    tool_calls_log.append(record)
+                    logger.warning(f"[{run_id}] Duplicate call blocked: {tool_name}")
+                    continue
+                seen_calls.add(call_key)
+
                 # ── Approval required? ──────────────────────────────────────────
                 if tool_name in APPROVAL_REQUIRED_TOOLS:
                     record.approved = None
@@ -185,6 +219,7 @@ def _run_loop(
 
                 # ── Execute immediately (read tool) ─────────────────────────────
                 retry_key = f"{tool_name}_{step_count}"
+                _status(f"⚙️ Executing: `{tool_name}`...")
                 try:
                     result = execute_tool(tool_name, tool_input)
                     record.tool_result = result
@@ -194,6 +229,7 @@ def _run_loop(
                         "tool_call_id": tool_id,
                         "content": json.dumps(result),
                     })
+                    _status(f"✅ `{tool_name}` → {'success' if result.get('success') else 'done'}")
                     logger.info(f"[{run_id}] Tool {tool_name} → success={result.get('success')}")
                 except Exception as e:
                     tool_retries[retry_key] = tool_retries.get(retry_key, 0) + 1
@@ -205,6 +241,7 @@ def _run_loop(
                         "tool_call_id": tool_id,
                         "content": json.dumps(err_result),
                     })
+                    _status(f"❌ `{tool_name}` failed: {str(e)[:60]}")
                     if tool_retries[retry_key] >= MAX_TOOL_RETRIES:
                         logger.warning(f"[{run_id}] Tool {tool_name} failed {MAX_TOOL_RETRIES} times")
 
@@ -232,6 +269,7 @@ def _run_loop(
 def run_agent(
     user_message: str,
     conversation_history: List[dict],
+    status_fn=None,
 ) -> AgentRunResult:
     """Start a new agent run with a user message."""
     if not user_message.strip():
@@ -250,6 +288,8 @@ def run_agent(
         step_count=0,
         tool_calls_log=[],
         tool_retries={},
+        status_fn=status_fn,
+        seen_calls=set(),
     )
 
     _finalize_log(log_id, result, start_ms)
@@ -259,6 +299,7 @@ def run_agent(
 def resume_after_approval(
     pending: PendingApproval,
     approved: bool,
+    status_fn=None,
 ) -> AgentRunResult:
     """Resume an agent run after human approval decision."""
     start_ms = int(time.time() * 1000)
@@ -297,6 +338,7 @@ def resume_after_approval(
         step_count=pending.step_count,
         tool_calls_log=pending.tool_calls_log,
         tool_retries={},
+        status_fn=status_fn,
     )
 
     _finalize_log(pending.log_id, result, start_ms)
@@ -312,6 +354,8 @@ def _finalize_log(log_id: int, result: AgentRunResult, start_ms: int):
             {
                 "step": r.step,
                 "name": r.tool_name,
+                "input": r.tool_input,
+                "result": r.tool_result,
                 "approved": r.approved,
                 "success": r.tool_result.get("success") if r.tool_result else None,
                 "error": r.error,

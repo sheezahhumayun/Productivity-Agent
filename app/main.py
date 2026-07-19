@@ -188,7 +188,6 @@ def _handle_approval(approved: bool):
     st.session_state.pending_approval = None
     st.session_state.agent_status = "thinking"
 
-    # Add approval/rejection to conversation display
     status_msg = "✅ Approved" if approved else "❌ Rejected"
     st.session_state.conversation.append({
         "role": "system",
@@ -196,7 +195,8 @@ def _handle_approval(approved: bool):
         "timestamp": datetime.now().strftime("%H:%M"),
     })
 
-    result = resume_after_approval(pa, approved)
+    with st.status("⚙️ Resuming agent...", expanded=True) as s:
+        result = resume_after_approval(pa, approved, status_fn=s.write)
     _process_result(result)
 
 
@@ -366,7 +366,15 @@ def render_logs_tab():
                 for tc in log["tools_called"]:
                     approved_str = "✅" if tc.get("approved") else ("❌" if tc.get("approved") is False else "⏳")
                     success_str = "✅" if tc.get("success") else "❌"
-                    st.write(f"  {approved_str} `{tc['name']}` → {success_str}")
+                    with st.expander(f"  {approved_str} `{tc['name']}` → {success_str}"):
+                        if tc.get("input"):
+                            st.write("**Input:**")
+                            st.json(tc["input"])
+                        if tc.get("result"):
+                            st.write("**Result:**")
+                            st.json(tc["result"])
+                        if tc.get("error"):
+                            st.error(f"Error: {tc['error']}")
 
             if log["errors"]:
                 st.error(f"Errors: {log['errors']}")
@@ -453,8 +461,8 @@ def main():
                 if m["role"] in ("user", "assistant"):
                     api_messages.append({"role": m["role"], "content": m["content"]})
 
-            with st.spinner("🧠 Agent working..."):
-                result = run_agent(user_msg, api_messages)
+            with st.status("🧠 Agent working...", expanded=True) as s:
+                result = run_agent(user_msg, api_messages, status_fn=s.write)
 
             _process_result(result)
 

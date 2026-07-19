@@ -13,6 +13,8 @@ class SaveNoteInput(BaseModel):
 class SearchNotesInput(BaseModel):
     query: str
     category: Optional[str] = None
+    date_from: Optional[str] = None  # YYYY-MM-DD inclusive
+    date_to: Optional[str] = None    # YYYY-MM-DD inclusive
 
 
 NOTE_TOOL_DEFS = [
@@ -56,6 +58,14 @@ NOTE_TOOL_DEFS = [
                     "type": "string",
                     "description": "Optionally filter by category",
                 },
+                "date_from": {
+                    "type": "string",
+                    "description": "Filter notes created on or after this date (YYYY-MM-DD)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "Filter notes created on or before this date (YYYY-MM-DD)",
+                },
             },
             "required": ["query"],
         },
@@ -76,7 +86,12 @@ def execute_note_tool(name: str, tool_input: dict) -> dict:
 
     if name == "search_notes":
         inp = SearchNotesInput(**tool_input)
-        notes = repo.search_notes(query=inp.query, category=inp.category)
+        notes = repo.search_notes(
+            query=inp.query,
+            category=inp.category,
+            date_from=inp.date_from,
+            date_to=inp.date_to,
+        )
         return {"success": True, "notes": notes, "count": len(notes)}
 
     return {"success": False, "error": f"Unknown note tool: {name}"}
