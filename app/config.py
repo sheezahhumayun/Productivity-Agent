@@ -4,6 +4,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _secret(key: str, default: str = "") -> str:
+    """Read from env first, then Streamlit secrets (for Streamlit Cloud deployment)."""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        import streamlit as st
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
 # Paths
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -15,15 +28,12 @@ LOG_DIR.mkdir(exist_ok=True)
 DB_PATH = os.getenv("DB_PATH", str(DATA_DIR / "productivity.db"))
 
 # LLM — Groq (OpenAI-compatible endpoint)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+GROQ_API_KEY = _secret("GROQ_API_KEY")
+LLM_MODEL = _secret("LLM_MODEL") or "llama-3.3-70b-versatile"
 LLM_BASE_URL = "https://api.groq.com/openai/v1"
 
-# Backward compat: also check GOOGLE_API_KEY
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-
 # Use whichever key is set
-API_KEY = GROQ_API_KEY or GOOGLE_API_KEY
+API_KEY = GROQ_API_KEY or _secret("GOOGLE_API_KEY")
 
 # Agent limits
 MAX_AGENT_STEPS = 8
