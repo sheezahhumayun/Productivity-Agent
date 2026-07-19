@@ -11,7 +11,7 @@
 │                     STREAMLIT FRONTEND                          │
 │  ┌───────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
 │  │  Chat Window  │  │  Approval Card  │  │  Task/Note/Log   │  │
-│  │  (messages)   │  │  (approve/deny) │  │  Panels          │  │
+│  │  + st.status  │  │  (approve/deny) │  │  Panels          │  │
 │  └───────┬───────┘  └────────┬────────┘  └──────────────────┘  │
 └──────────│──────────────────│────────────────────────────────────┘
            │                  │
@@ -19,43 +19,55 @@
 │                        AGENT CONTROLLER                          │
 │  app/agent/agent.py                                              │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │  run_agent(user_message, history) → AgentRunResult         │  │
-│  │  resume_after_approval(pending, approved) → AgentRunResult  │  │
+│  │  run_agent(user_msg, history, status_fn) → AgentRunResult  │  │
+│  │  resume_after_approval(pending, approved, status_fn)        │  │
 │  └──────────────┬───────────────────────────────────────────┘   │
 │                 │                                                │
 │  ┌──────────────▼──────────────────────────────────────────┐    │
 │  │                    AGENT LOOP                           │    │
-│  │  while step < MAX_STEPS:                                │    │
-│  │    1. Call LLM API                                      │    │
-│  │    2. Parse response (text / tool_use)                  │    │
-│  │    3. If tool_use:                                      │    │
-│  │       a. Check if approval required                     │    │
-│  │       b. If yes → return PendingApproval               │    │
-│  │       c. If no  → execute immediately                   │    │
-│  │    4. Add tool result to messages                       │    │
-│  │    5. Repeat                                            │    │
+│  │  seen_calls = set()    # duplicate detection            │    │
+│  │  while step < MAX_STEPS (8):                            │    │
+│  │    1. status_fn("🧠 Step N: thinking...")               │    │
+│  │    2. Call LLM API (Groq / llama-3.3-70b-versatile)    │    │
+│  │    3. Parse response (text / tool_calls)                │    │
+│  │    4. For each tool call:                               │    │
+│  │       a. status_fn("🔧 Selected tool: `name`")         │    │
+│  │       b. Check duplicate — block if seen before         │    │
+│  │       c. Check if approval required                     │    │
+│  │          YES → return PendingApproval                   │    │
+│  │          NO  → status_fn("⚙️ Executing: `name`...")    │    │
+│  │              → execute with 30s timeout                 │    │
+│  │              → status_fn("✅ `name` completed")         │    │
+│  │    5. Add tool results to messages                      │    │
+│  │    6. Repeat                                            │    │
+│  │  status_fn("✍️ Producing final response...")            │    │
 │  └─────────────────────────────────────────────────────────┘    │
 └────────────┬─────────────────────────┬───────────────────────────┘
              │                         │
 ┌────────────▼──────────┐  ┌───────────▼──────────────────────────┐
 │     LLM API           │  │           TOOL REGISTRY              │
-│  (Anthropic Claude)   │  │  app/tools/                          │
-│                       │  │  ┌─────────────────────────────────┐ │
-│  Tool definitions     │  │  │  task_tools.py                  │ │
-│  sent as JSON schema  │  │  │  - create_task  [WRITE]         │ │
-│                       │  │  │  - list_tasks   [READ]          │ │
-│  Model returns:       │  │  │  - update_task  [WRITE]         │ │
-│  - text response, OR  │  │  │  - complete_task [WRITE]        │ │
-│  - tool_use blocks    │  │  │  - delete_task  [WRITE]         │ │
-└───────────────────────┘  │  ├─────────────────────────────────┤ │
-                           │  │  note_tools.py                  │ │
-                           │  │  - save_note   [WRITE]          │ │
+│  Groq (OpenAI-compat) │  │  app/tools/                          │
+│  llama-3.3-70b        │  │  ┌─────────────────────────────────┐ │
+│                       │  │  │  task_tools.py (5 tools)        │ │
+│  Tool definitions     │  │  │  - create_task  [WRITE]         │ │
+│  sent as JSON schema  │  │  │  - list_tasks   [READ]          │ │
+│  (OpenAI format)      │  │  │  - update_task  [WRITE]         │ │
+│                       │  │  │  - complete_task [WRITE]        │ │
+│  Model returns:       │  │  │  - delete_task  [WRITE]         │ │
+│  - text response, OR  │  │  ├─────────────────────────────────┤ │
+│  - tool_calls array   │  │  │  note_tools.py (2 tools)        │ │
+└───────────────────────┘  │  │  - save_note   [WRITE]          │ │
                            │  │  - search_notes [READ]          │ │
+                           │  │    + date range filter          │ │
                            │  ├─────────────────────────────────┤ │
-                           │  │  planning_tools.py              │ │
+                           │  │  planning_tools.py (3 tools)    │ │
                            │  │  - extract_meeting_actions [READ]│ │
                            │  │  - generate_work_plan [READ]    │ │
                            │  │  - generate_weekly_report [READ]│ │
+                           │  ├─────────────────────────────────┤ │
+                           │  │  __init__.py (router)           │ │
+                           │  │  - 30s timeout per tool         │ │
+                           │  │  - ThreadPoolExecutor           │ │
                            │  └─────────────────────────────────┘ │
                            └──────────────┬───────────────────────┘
                                           │
@@ -63,9 +75,9 @@
                            │          DATABASE LAYER               │
                            │  app/database/                        │
                            │  ┌─────────────────────────────────┐ │
-                           │  │  models.py (SQLAlchemy)         │ │
-                           │  │  - TaskModel                    │ │
-                           │  │  - NoteModel                    │ │
+                           │  │  models.py (SQLAlchemy 2.0)     │ │
+                           │  │  - TaskModel (11 fields)        │ │
+                           │  │  - NoteModel (7 fields)         │ │
                            │  │  - ExecutionLogModel            │ │
                            │  ├─────────────────────────────────┤ │
                            │  │  repository.py (CRUD layer)     │ │
@@ -81,80 +93,184 @@
                            └──────────────────────────────────────┘
 ```
 
+---
+
 ## Human Approval Flow
 
 ```
-Agent calls write tool
+Agent selects a write tool (create_task / update_task / complete_task /
+delete_task / save_note)
          │
          ▼
   Tool in APPROVAL_REQUIRED_TOOLS?
          │
     YES  │  NO
-         │    └──► Execute immediately → continue loop
+         │    └──► execute_tool() with 30s timeout → continue loop
          ▼
-  Return AgentRunResult(pending_approval=...)
+  Return AgentRunResult(pending_approval=PendingApproval(...))
          │
          ▼
-  Streamlit shows Approval Card
-  - Tool name
-  - Human-readable description
-  - Full parameters (expandable)
-  - [Approve] / [Reject] buttons
+  Streamlit renders Approval Card:
+  ┌─────────────────────────────────────────────┐
+  │  ⚠️  Approval Required                      │
+  │  Tool:    create_task                        │
+  │  Action:  Create task: "Review API docs"     │
+  │  ▶ View full parameters (JSON)               │
+  │  [✅ Approve]  [❌ Reject]                   │
+  └─────────────────────────────────────────────┘
          │
   User clicks Approve / Reject
          │
          ▼
-  resume_after_approval(pending, approved)
+  resume_after_approval(pending, approved, status_fn)
          │
-    APPROVED: execute_tool() → continue loop
-    REJECTED: inject rejection message → continue loop
+    APPROVED: execute_tool() → add result to messages → continue loop
+    REJECTED: inject rejection message → LLM acknowledges → stop
          │
          ▼
   Agent generates final response
 ```
 
+---
+
 ## Session Memory
 
 The agent maintains conversational context through:
-1. **`st.session_state.conversation`** — display-layer messages (user/assistant/system)
-2. **`api_messages`** — raw API message history passed to the LLM on each turn
-3. **`pending_approval`** — serialized mid-run state (messages, step count, tool log)
 
-When a multi-step workflow is paused for approval, the entire LLM message history is preserved in `PendingApproval.messages`, allowing the loop to resume exactly where it left off.
+1. **`st.session_state.conversation`** — display-layer messages shown in chat
+2. **`api_messages`** — raw message history reconstructed from conversation and passed to the LLM on every turn
+3. **`pending_approval`** — serialised mid-run state (full message history, step count, tool log) stored in session state while the user reviews an approval
+
+When a multi-step workflow is paused for approval, the entire LLM message history is preserved in `PendingApproval.messages`, allowing the loop to resume exactly where it left off with full context.
+
+---
+
+## Agent Execution Limits
+
+| Limit | Value | Why |
+|-------|-------|-----|
+| `MAX_AGENT_STEPS` | 8 | Sufficient for complex multi-step workflows (meeting → 5 tasks + summary = 7 steps). Prevents runaway loops. |
+| `MAX_TOOL_RETRIES` | 2 | One automatic retry for transient errors, then surface to user. More retries waste tokens and time. |
+| `TOOL_TIMEOUT_SECONDS` | 30 | LLM-powered sub-calls (`extract_meeting_actions`) can take 10–15 s. 30 s is safe without feeling frozen. |
+| Duplicate call block | — | Identical (tool_name + args) calls within one agent turn are blocked. Prevents the model from looping on the same operation. |
+
+---
 
 ## Error Handling
 
-| Error Type | Handling |
-|---|---|
-| Missing API key | Shown in sidebar; chat input disabled |
-| LLM connection error | User-friendly error in chat |
-| Invalid tool arguments | Pydantic validation raises before execution |
-| Tool execution failure | Error result returned to LLM; LLM reports to user |
-| Max steps exceeded | Clear error message; partial results shown |
-| Unknown task ID | Graceful "not found" message |
-| Empty user input | Rejected before LLM call |
+| Error Type | Where Caught | User-Facing Message |
+|---|---|---|
+| Missing API key | `main.py` sidebar | "❌ No API Key — add GROQ_API_KEY to .env" |
+| LLM connection error | `agent.py` try/except | "Connection error: …" |
+| LLM auth error | `agent.py` try/except | "Invalid API key. Check your GROQ_API_KEY" |
+| Invalid tool arguments | `task_tools.py` Pydantic | "priority must be one of {…}" |
+| Unknown task ID | `repository.py` | "Task #N not found" |
+| Tool timeout | `tools/__init__.py` ThreadPool | "Tool 'name' timed out after 30s" |
+| Tool execution error | `tools/__init__.py` | Structured error passed to LLM |
+| Max steps exceeded | `agent.py` loop exit | "Agent reached the maximum step limit (8)" |
+| Empty user input | `agent.py` pre-check | "Empty message." |
+| Duplicate tool call | `agent.py` seen_calls | "Duplicate call: already called with identical arguments" |
 
-## Data Flow — Meeting Notes to Tasks (Multi-Step Workflow)
+Stack traces and API keys are never shown in the UI.
+
+---
+
+## Execution Log Schema
+
+Every agent run writes to `execution_logs` with:
+
+```json
+{
+  "run_id": "run_a1b2c3d4",
+  "user_request": "Create a task to review the docs",
+  "model": "llama-3.3-70b-versatile",
+  "tools_called": [
+    {
+      "step": 1,
+      "name": "create_task",
+      "input": {"title": "Review the docs", "priority": "high"},
+      "result": {"success": true, "task": {"id": 7, "title": "Review the docs"}},
+      "approved": true,
+      "success": true,
+      "error": null
+    }
+  ],
+  "step_count": 1,
+  "errors": [],
+  "status": "completed",
+  "start_time": "2026-07-20 10:00:00",
+  "end_time": "2026-07-20 10:00:05",
+  "duration_ms": 5210,
+  "final_outcome": "Task #7 created: Review the docs"
+}
+```
+
+---
+
+## Data Flow — Meeting Notes to Tasks (Workflow A)
 
 ```
 User: "Here are my meeting notes, create tasks from them"
          │
          ▼
 1. Agent calls extract_meeting_actions(meeting_notes)
-   → LLM extracts decisions, action items, owners, deadlines
+   → Groq LLM extracts decisions, action items, owners, deadlines (JSON)
          │
          ▼
 2. Agent presents extracted action items to user
-   → Shows proposed task titles, priorities, deadlines
+   → Shows proposed task titles, priorities, and deadlines
          │
          ▼
 3. Agent calls create_task() for each action item
-   → System pauses for approval (one at a time)
+   → System pauses for approval (one per task)
          │
          ▼
 4. User approves each task
-   → Agent creates the task, continues to next
+   → Agent creates the task, continues to the next
          │
          ▼
-5. Agent reports all created task IDs to user
+5. Agent reports all created task IDs in a summary
+```
+
+---
+
+## Data Flow — Daily Planning (Workflow B)
+
+```
+User: "Make me a work plan for today with 6 hours"
+         │
+         ▼
+1. generate_work_plan(available_hours=6, date="2026-07-20")
+   → list_tasks(status="pending") + in_progress + blocked
+   → Score each task: priority (4/3/2/1) + overdue bonus + tag match
+   → Sort by score, fill schedule until hours exhausted
+   → Flag blocked tasks and overdue items as risk warnings
+         │
+         ▼
+2. Agent formats and presents the ordered schedule
+   → Scheduled tasks with estimated hours
+   → Deferred tasks
+   → Risk warnings
+   → Recommended focus areas (top 3)
+```
+
+---
+
+## Data Flow — Weekly Review (Workflow C)
+
+```
+User: "Show me my weekly report"
+         │
+         ▼
+1. generate_weekly_report()
+   → list_tasks(limit=200) → split into buckets:
+     completed / overdue / blocked / pending / in_progress
+   → next_week_priorities = top 5 high/critical pending tasks
+         │
+         ▼
+2. Agent presents the report:
+   → Statistics (counts per status)
+   → Completed tasks this week
+   → Overdue and blocked items
+   → Recommended priorities for next week
 ```

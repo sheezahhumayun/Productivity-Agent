@@ -1,3 +1,6 @@
+import concurrent.futures
+
+from app.config import TOOL_TIMEOUT_SECONDS
 from app.tools.task_tools import TASK_TOOL_DEFS, execute_task_tool
 from app.tools.note_tools import NOTE_TOOL_DEFS, execute_note_tool
 from app.tools.planning_tools import PLANNING_TOOL_DEFS, execute_planning_tool
@@ -35,7 +38,14 @@ def execute_tool(name: str, tool_input: dict) -> dict:
     router = _ROUTERS.get(name)
     if not router:
         return {"success": False, "error": f"Unknown tool: {name}"}
-    try:
-        return router(name, tool_input)
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(router, name, tool_input)
+        try:
+            return future.result(timeout=TOOL_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            return {
+                "success": False,
+                "error": f"Tool '{name}' timed out after {TOOL_TIMEOUT_SECONDS}s",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
